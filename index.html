@@ -67,7 +67,9 @@ html,body{overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
 #gl{touch-action:none}
 body.touch #h-hint,body.touch #capture-hint{display:none!important}
 #touch{position:fixed;inset:0;pointer-events:none;z-index:15}
-#t-joy{display:none;pointer-events:auto;touch-action:none;position:absolute;left:max(22px,env(safe-area-inset-left));bottom:max(26px,env(safe-area-inset-bottom));width:136px;height:136px;border-radius:50%;background:rgba(13,33,66,.35);box-shadow:0 0 0 2px rgba(115,224,255,.4) inset}
+#t-zone{display:none;pointer-events:auto;touch-action:none;position:absolute;left:0;top:70px;bottom:0;width:46vw}
+#t-joy{display:none;pointer-events:none;touch-action:none;position:absolute;left:max(70px,env(safe-area-inset-left));bottom:max(60px,env(safe-area-inset-bottom));width:136px;height:136px;border-radius:50%;background:rgba(13,33,66,.35);box-shadow:0 0 0 2px rgba(115,224,255,.4) inset}
+#t-joy.act{background:rgba(13,33,66,.5)}
 #t-knob{position:absolute;left:50%;top:50%;width:62px;height:62px;margin:-31px 0 0 -31px;border-radius:50%;background:rgba(115,224,255,.6);box-shadow:0 2px 8px #0008}
 .tgrp{position:absolute;display:flex;gap:10px;direction:ltr}
 #t-act{right:max(18px,env(safe-area-inset-right));bottom:max(24px,env(safe-area-inset-bottom));flex-wrap:wrap-reverse;justify-content:flex-end;align-items:flex-end;max-width:62vw}
@@ -1912,20 +1914,20 @@ class Player {
     this.apply();
   }
   get captured() { return document.pointerLockElement === this.canvas; }
-  wantCapture() { if (this.locked || Hud.modalIsOpen) return; try { const r = this.canvas.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } }
+  wantCapture() { if (this.locked || Hud.modalIsOpen || TouchUI.on) return; try { const r = this.canvas.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } }
   release() { if (this.captured) { this.expectUnlock = true; document.exitPointerLock(); } }
   onLockChange() {
     const hint = $('capture-hint');
     if (this.captured) { hint.style.display = 'none'; return; }
     if (this.expectUnlock) { this.expectUnlock = false; return; }
-    if (!this.locked && !Hud.modalIsOpen && app.user && !Login.active) Pause.show();
+    if (!this.locked && !Hud.modalIsOpen && app.user && !Login.active && !TouchUI.on) Pause.show();
   }
   onDown(e) {
-    if (e.button !== 0 || this.locked) return;
+    if (e.button !== 0 || this.locked || TouchUI.on) return;
     if (this.captured) this.interact(); else { this.drag = true; this.wantCapture(); }
   }
   onMove(e) {
-    if (this.locked) return;
+    if (this.locked || TouchUI.on) return;
     if (this.captured) { this.h -= e.movementX * 0.1; this.p = clamp(this.p - e.movementY * 0.1, -80, 80); }
     else if (this.drag) { this.h -= e.movementX * 0.2; this.p = clamp(this.p - e.movementY * 0.2, -80, 80); }
   }
@@ -2084,10 +2086,10 @@ const TouchUI = {
     if (IS_TOUCH) this.enable();
   },
   enable() {
-    if (this.on) return; this.on = true; document.body.classList.add('touch');
+    if (this.on) return; this.on = true; document.body.classList.add('touch'); try { if (document.pointerLockElement) document.exitPointerLock(); } catch (e) { }
     const root = this.root = document.createElement('div'); root.id = 'touch';
     root.innerHTML =
-      '<div id="t-joy"><div id="t-knob"></div></div>' +
+      '<div id="t-zone"></div><div id="t-joy"><div id="t-knob"></div></div>' +
       '<div id="t-top" class="tgrp"></div><div id="t-act" class="tgrp"></div><div id="t-left" class="tgrp"></div>';
     document.body.appendChild(root);
     const mb = this.mbar = document.createElement('div'); mb.id = 't-modal'; document.body.appendChild(mb);
@@ -2097,7 +2099,7 @@ const TouchUI = {
     this.setupJoy(); this.setupLook();
     addEventListener('resize', () => this.layout()); addEventListener('orientationchange', () => setTimeout(() => this.layout(), 200));
     // audio unlock + first-tap fullscreen
-    addEventListener('pointerup', () => { Sfx.init(); if (!this.fs) { this.fs = true; this.fullscreen(true); } }, true);
+    addEventListener('pointerup', () => { Sfx.init(); }, true);
     this.layout(); setInterval(() => this.sync(), 120);
   },
   fullscreen(auto) {
@@ -2113,18 +2115,25 @@ const TouchUI = {
   layout() { this.rot.style.display = (innerHeight > innerWidth * 1.05 && !this.rotOk) ? 'flex' : 'none'; },
   /* ---- joystick ---- */
   setupJoy() {
-    const base = $('t-joy'), knob = $('t-knob'); let id = null;
+    const zone = $('t-zone'), base = $('t-joy'), knob = $('t-knob'); let id = null, cx = 0, cy = 0; const R = 68;
+    const home = () => { base.style.left = ''; base.style.top = ''; base.style.bottom = ''; };
+    const place = (x, y) => { // put the stick under the thumb, but keep it away from the screen edges (system gestures)
+      const m = R + 46; x = Math.min(Math.max(x, m), innerWidth - m); y = Math.min(Math.max(y, m), innerHeight - m);
+      base.style.left = (x - R) + 'px'; base.style.top = (y - R) + 'px'; base.style.bottom = 'auto'; cx = x; cy = y;
+    };
     const set = (e) => {
-      const r = base.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2, R = r.width / 2;
       let dx = (e.clientX - cx) / R, dy = (e.clientY - cy) / R; const l = Math.hypot(dx, dy); if (l > 1) { dx /= l; dy /= l; }
       knob.style.transform = 'translate(' + dx * R * 0.62 + 'px,' + dy * R * 0.62 + 'px)';
       const m = Math.hypot(dx, dy); if (m < 0.14) { this.joy.on = false; this.joy.x = this.joy.y = 0; } else { this.joy.on = true; this.joy.x = dx; this.joy.y = dy; }
       if (m > 0.92) Keys.down.add('ShiftLeft'); else if (!this.runLatch) Keys.down.delete('ShiftLeft');
     };
-    const end = (e) => { if (e.pointerId !== id) return; id = null; this.joy.on = false; this.joy.x = this.joy.y = 0; knob.style.transform = ''; if (!this.runLatch) Keys.down.delete('ShiftLeft'); };
-    base.addEventListener('pointerdown', e => { id = e.pointerId; try { base.setPointerCapture(e.pointerId); } catch (x) { } set(e); e.preventDefault(); });
-    base.addEventListener('pointermove', e => { if (e.pointerId === id) set(e); });
-    base.addEventListener('pointerup', end); base.addEventListener('pointercancel', end);
+    const end = (e) => { if (e.pointerId !== id) return; id = null; this.joy.on = false; this.joy.x = this.joy.y = 0; knob.style.transform = ''; home(); base.classList.remove('act'); if (!this.runLatch) Keys.down.delete('ShiftLeft'); };
+    zone.addEventListener('pointerdown', e => {
+      if (id !== null) return; id = e.pointerId; try { zone.setPointerCapture(e.pointerId); } catch (x) { }
+      place(e.clientX, e.clientY); base.classList.add('act'); set(e); e.preventDefault();
+    });
+    zone.addEventListener('pointermove', e => { if (e.pointerId === id) set(e); });
+    zone.addEventListener('pointerup', end); zone.addEventListener('pointercancel', end); zone.addEventListener('lostpointercapture', end);
   },
   /* ---- look (drag) + tap to interact ---- */
   setupLook() {
@@ -2181,7 +2190,7 @@ const TouchUI = {
   build(m) {
     const top = $('t-top'), act = $('t-act'), left = $('t-left'), joy = $('t-joy'), mb = this.mbar;
     top.innerHTML = act.innerHTML = left.innerHTML = mb.innerHTML = ''; this.joy.on = false; this.joy.x = this.joy.y = 0;
-    joy.style.display = m === 'roam' ? 'block' : 'none'; mb.style.display = m.startsWith('modal') ? 'flex' : 'none';
+    joy.style.display = m === 'roam' ? 'block' : 'none'; $('t-zone').style.display = m === 'roam' ? 'block' : 'none'; mb.style.display = m.startsWith('modal') ? 'flex' : 'none';
     if (m === 'roam') {
       this.btn(act, 'تفاعل', { id: 't-use', cls: 'big', code: 'KeyE' });
       this.btn(act, 'ركض', { cls: this.runLatch ? 'tog on' : 'tog', fn: (b) => { this.runLatch = !this.runLatch; if (this.runLatch) Keys.down.add('ShiftLeft'); else Keys.down.delete('ShiftLeft'); b.classList.toggle('on', this.runLatch); } });
@@ -2206,6 +2215,14 @@ const TouchUI = {
     }
   },
 };
+
+/* ?debug -> tiny on-screen event counter, to diagnose phones */
+if (/[?&]debug/.test(location.search)) addEventListener('load', () => {
+  const d = document.createElement('div'); d.style.cssText = 'position:fixed;left:4px;top:4px;z-index:99;background:#000b;color:#7f7;font:11px monospace;padding:4px 6px;pointer-events:none;white-space:pre;direction:ltr';
+  document.body.appendChild(d); const c = {};
+  for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) addEventListener(t, e => { const k = t.replace('pointer', '') + ':' + e.pointerType; c[k] = (c[k] || 0) + 1; }, true);
+  setInterval(() => { const p = app && app.player; d.textContent = Object.entries(c).map(x => x.join('=')).join(' ') + '\njoy ' + TouchUI.joy.x.toFixed(2) + ',' + TouchUI.joy.y.toFixed(2) + ' on=' + TouchUI.joy.on + ' mode=' + TouchUI.mode + '\npos ' + (p ? [p.x, p.z, p.h].map(v => v.toFixed(1)).join(',') : '') + ' ' + innerWidth + 'x' + innerHeight + ' fs=' + !!document.fullscreenElement; }, 150);
+});
 </script>
 </body>
 </html>
